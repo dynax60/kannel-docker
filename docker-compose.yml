@@ -1,0 +1,31 @@
+version: '3.7'
+
+services:
+  bearerbox:
+    image: dynax60/kannel:r5302
+    hostname: bearerbox
+    restart: always
+    command: bearerbox /etc/kannel/kannel.conf
+    configs:
+      - source: conf
+        target: 
+    ports:
+      - "13000:13000"
+    volumes:
+      - ./conf:/etc/kannel
+      - ./log:/var/log/kannel
+      - ./data:/var/spool/kannel
+
+  smsbox:
+    image: dynax60/kannel:r5302
+    hostname: smsbox
+    command: smsbox /etc/kannel/smsbox.conf
+    links:
+      - bearerbox
+    ports:
+      - "13013:13013"
+    volumes:
+      - ./conf:/etc/kannel
+      - ./log:/var/log/kannel
+    depends_on:
+      - bearerbox

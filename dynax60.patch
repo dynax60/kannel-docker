@@ -1,0 +1,330 @@
+Index: gw/bb_boxc.c
+===================================================================
+--- gw/bb_boxc.c	(revision 5282)
++++ gw/bb_boxc.c	(working copy)
+@@ -111,6 +111,7 @@
+ static Dict *smsbox_by_smsc;
+ static Dict *smsbox_by_receiver;
+ static Dict *smsbox_by_smsc_receiver;
++static Dict *smsbox_by_sender;
+ 
+ static long	smsbox_port;
+ static int smsbox_port_ssl;
+@@ -1066,6 +1067,8 @@
+     smsbox_by_receiver = NULL;
+     dict_destroy(smsbox_by_smsc_receiver);
+     smsbox_by_smsc_receiver = NULL;
++    dict_destroy(smsbox_by_sender);
++    smsbox_by_sender = NULL;
+ 
+     gwlist_remove_producer(flow_threads);
+ }
+@@ -1123,10 +1126,10 @@
+ {
+     CfgGroup *grp;
+     List *list, *items;
+-    Octstr *boxc_id, *smsc_ids, *shortcuts;
++    Octstr *boxc_id, *smsc_ids, *shortcuts, *senders;
+     int i, j;
+ 
+-    boxc_id = smsc_ids = shortcuts = NULL;
++    boxc_id = smsc_ids = shortcuts = senders = NULL;
+ 
+     list = cfg_get_multi_group(cfg, octstr_imm("smsbox-route"));
+ 
+@@ -1149,9 +1152,27 @@
+          */
+         smsc_ids = cfg_get(grp, octstr_imm("smsc-id"));
+         shortcuts = cfg_get(grp, octstr_imm("shortcode"));
++        senders = cfg_get(grp, octstr_imm("sender"));
+ 
+-        /* consider now the 3 possibilities: */
+-        if (smsc_ids && !shortcuts) {
++        /* consider now the 4 possibilities: */
++        if (senders) {
++            /* senders only, so these MOs from specified numbers */
++            items = octstr_split(senders, octstr_imm(";"));
++            for (i = 0; i < gwlist_len(items); i++) {
++                Octstr *item = gwlist_get(items, i);
++                octstr_strip_blanks(item);
++
++                debug("bb.boxc",0,"Adding smsbox routing to id <%s> for sender no <%s>",
++                      octstr_get_cstr(boxc_id), octstr_get_cstr(item));
++
++                if (!dict_put_once(smsbox_by_sender, item, octstr_duplicate(boxc_id)))
++                    RELOAD_PANIC(0, "Routing for sender no <%s> already exists!",
++                          octstr_get_cstr(item));
++            }
++            gwlist_destroy(items, octstr_destroy_item);
++            octstr_destroy(senders);
++        }
++        else if (smsc_ids && !shortcuts) {
+             /* smsc-id only, so all MO traffic */
+             items = octstr_split(smsc_ids, octstr_imm(";"));
+             for (i = 0; i < gwlist_len(items); i++) {
+@@ -1216,6 +1237,7 @@
+             }
+             gwlist_destroy(items, octstr_destroy_item);
+             octstr_destroy(shortcuts);
++            octstr_destroy(smsc_ids);
+         }
+         octstr_destroy(boxc_id);
+     }
+@@ -1278,6 +1300,7 @@
+     smsbox_by_smsc = dict_create(30, (void(*)(void *)) octstr_destroy);
+     smsbox_by_receiver = dict_create(50, (void(*)(void *)) octstr_destroy);
+     smsbox_by_smsc_receiver = dict_create(50, (void(*)(void *)) octstr_destroy);
++    smsbox_by_sender = dict_create(250, (void(*)(void *)) octstr_destroy);
+ 
+     /* load the defined smsbox routing rules */
+     init_smsbox_routes(cfg, 0);
+@@ -1305,9 +1328,11 @@
+     dict_destroy(smsbox_by_smsc);
+     dict_destroy(smsbox_by_receiver);
+     dict_destroy(smsbox_by_smsc_receiver);
++    dict_destroy(smsbox_by_sender);
+     smsbox_by_smsc = dict_create(30, (void(*)(void *)) octstr_destroy);
+     smsbox_by_receiver = dict_create(50, (void(*)(void *)) octstr_destroy);
+     smsbox_by_smsc_receiver = dict_create(50, (void(*)(void *)) octstr_destroy);
++    smsbox_by_sender = dict_create(250, (void(*)(void *)) octstr_destroy);
+     init_smsbox_routes(cfg, 1);
+     gw_rwlock_unlock(smsbox_list_rwlock);
+ 
+@@ -1531,7 +1556,7 @@
+ int route_incoming_to_boxc(Msg *msg)
+ {
+     Boxc *bc = NULL;
+-    Octstr *s, *r, *rs, *boxc_id = NULL;
++    Octstr *s, *r, *rs, *boxc_id = NULL, *sender;
+     long len, b, i;
+     int full_found = 0;
+ 
+@@ -1571,10 +1596,14 @@
+         rs = (os ? dict_get(smsbox_by_smsc_receiver, os) : NULL);
+         octstr_destroy(os);
+ 
++	sender = (msg->sms.sender ? dict_get(smsbox_by_sender, msg->sms.sender) : NULL);
++
+         if (rs)
+             boxc_id = rs;
++        else if (sender)
++    	    boxc_id = sender;
+         else if (r)
+-            boxc_id = r;
++	    boxc_id = r;
+         else if (s)
+             boxc_id = s;
+     }
+Index: gw/smsc/smpp_pdu.def
+===================================================================
+--- gw/smsc/smpp_pdu.def	(revision 5282)
++++ gw/smsc/smpp_pdu.def	(working copy)
+@@ -432,6 +432,7 @@
+     TLV_NULTERMINATED(source_network_id, 65)
+     TLV_OCTETS(source_node_id, 6, 6)
+     TLV_OCTETS(ussd_service_op, 1, 1)
++    TLV_OCTETS(dlr_err, 3, 3)
+     OPTIONAL_END
+ )
+ 
+Index: gw/smsc/smpp_pdu_opt.def
+===================================================================
+--- gw/smsc/smpp_pdu_opt.def	(revision 5282)
++++ gw/smsc/smpp_pdu_opt.def	(working copy)
+@@ -132,5 +132,7 @@
+ #define	SMPP_alert_on_message_delivery      0x130C
+ #define	SMPP_its_reply_type                 0x1380
+ #define	SMPP_its_session_info               0x1383
++/* block 0x1400-0x3FFF defined in SMPP v5.0 and reserved for vendor specific TLVs  */
++#define SMPP_dlr_err                        0x3FFF /* Additional error code, provider specific (kannel internals) */
+ 
+ #endif
+Index: gw/smsc/smsc_smpp.c
+===================================================================
+--- gw/smsc/smsc_smpp.c	(revision 5282)
++++ gw/smsc/smsc_smpp.c	(working copy)
+@@ -1539,6 +1539,8 @@
+     if (network_error_code != NULL) {
+         err_int = error_from_network_error_code(network_error_code);
+         network_err = octstr_duplicate(network_error_code);
++        debug("bb.sms.smpp", 0, "SMPP[%s]: PDU network error %d: %s",
++		octstr_get_cstr(smpp->conn->id), err_int, octstr_get_cstr(network_err));
+     }
+     
+     /* check for SMPP v.3.4. and message_payload */
+Index: gw/smscconn.c
+===================================================================
+--- gw/smscconn.c	(revision 5282)
++++ gw/smscconn.c	(working copy)
+@@ -145,7 +145,60 @@
+     }
+ }
+ 
++/*
++ * Add sender numbers to the connection data. Where the priority
++ * is in the order: sender-number, default-sender-number.
++ */
++static void init_senders(SMSCConn *conn, CfgGroup *grp)
++{
++    Octstr *rule;
++    long i;
+ 
++    if ((conn->default_sender_number = cfg_get(grp, octstr_imm("default-sender-number"))) != NULL) {
++	debug("smscconn", 0, "Adding default sender number <%s> for smsc id <%s>",
++	    octstr_get_cstr(conn->id), octstr_get_cstr(conn->default_sender_number));
++    }
++    
++    if ((rule = cfg_get(grp, octstr_imm("sender-number"))) != NULL) {
++        List *numbers;
++
++        /* create hash dictionary for this smsc-id */
++        conn->sender_by_smsbox_id = dict_create(20, (void(*)(void *)) octstr_destroy);
++
++        numbers = octstr_split(rule, octstr_imm(";"));
++        for (i = 0; i < gwlist_len(numbers); i++) {
++            Octstr *item = gwlist_get(numbers, i);
++            Octstr *smsbox_id, *sender;
++	    List *list;
++
++            /* first word is the smsbox-id, second word is the sender-number */
++            list = octstr_split(item, octstr_imm(","));
++            smsbox_id = gwlist_extract_first(list);
++            if (smsbox_id)
++                octstr_strip_blanks(smsbox_id);
++            sender = gwlist_extract_first(list);
++            if (sender)
++                octstr_strip_blanks(sender);
++
++	    if (smsbox_id && octstr_len(smsbox_id) && sender && octstr_len(sender)) {
++    		debug("smscconn",0,"Adding sender number for smsc id <%s>: smsbox-id <%s> to number <%s>",
++	    	    octstr_get_cstr(conn->id), octstr_get_cstr(smsbox_id), octstr_get_cstr(sender));
++        	if (!dict_put_once(conn->sender_by_smsbox_id, smsbox_id, octstr_duplicate(sender)))
++            	    panic(0, "Could not add sender number <%s> to smsbox-id <%s> on smsc id <%s>, because"
++			"smsbox-id has already entry!", octstr_get_cstr(sender),
++			    octstr_get_cstr(smsbox_id), octstr_get_cstr(conn->id));
++	    }
++	    
++            octstr_destroy(smsbox_id);
++            octstr_destroy(sender);
++            gwlist_destroy(list, octstr_destroy_item);
++        }
++        octstr_destroy(rule);
++        gwlist_destroy(numbers, octstr_destroy_item);
++    }
++}
++
++
+ unsigned int smscconn_instances(CfgGroup *grp)
+ {
+     long i;
+@@ -299,6 +352,9 @@
+ 
+     /* configure the internal rerouting rules for this smsc id */
+     init_reroute(conn, grp);
++    
++    /* configure the sender rules for this smsc id */
++    init_senders(conn, grp);
+ 
+     if (cfg_get_integer(&conn->log_level, grp, octstr_imm("log-level")) == -1)
+         conn->log_level = 0;
+@@ -436,6 +492,10 @@
+     octstr_destroy(conn->log_file);
+     octstr_destroy(conn->chksum);
+     octstr_destroy(conn->chksum_conn);
++    
++    octstr_destroy(conn->default_sender_number);
++    octstr_destroy(conn->sender_number);
++    dict_destroy(conn->sender_by_smsbox_id);
+ 
+     if (conn->denied_smsc_id_regex != NULL) gw_regex_destroy(conn->denied_smsc_id_regex);
+     if (conn->allowed_smsc_id_regex != NULL) gw_regex_destroy(conn->allowed_smsc_id_regex);
+@@ -595,8 +655,9 @@
+ 
+ int smscconn_send(SMSCConn *conn, Msg *msg)
+ {
+-    int ret = -1;
++    int ret = -1, replaced = 0;
+     List *parts = NULL;
++    Octstr *sender = NULL;
+     
+     gw_assert(conn != NULL);
+     mutex_lock(conn->flow_mutex);
+@@ -605,6 +666,29 @@
+         return -1;
+     }
+ 
++    /* Replace MT sender number with sender-number */
++    if (conn->sender_by_smsbox_id && octstr_len(msg->sms.service) > 0) {
++        sender = dict_get(conn->sender_by_smsbox_id, msg->sms.service);
++	if (sender) {
++    	    octstr_destroy(msg->sms.sender);
++	    msg->sms.sender = octstr_duplicate(sender);
++	    debug("smscconn",0,"Replacing MT for smsc id <%s>: msg sent from smsbox-id <%s>, sender replaced by <%s>",
++		octstr_get_cstr(conn->id), octstr_get_cstr(msg->sms.service), octstr_get_cstr(msg->sms.sender));
++	    replaced = 1;
++	} else {
++	    debug("smscconn", 0, "Replacing MT for smsc id <%s>: Cannot find sender number for smsbox-id <%s>",
++		octstr_get_cstr(conn->id), octstr_get_cstr(msg->sms.service));
++	}
++    }
++    
++    /* Default rule for replacing MT sender number with default-sender-number */
++    if (!replaced && octstr_len(conn->default_sender_number) > 0) {
++	octstr_destroy(msg->sms.sender);
++	msg->sms.sender = octstr_duplicate(conn->default_sender_number);
++	debug("smscconn", 0, "Replacing MT for smsc id <%s>: sender replaced by default <%s>",
++		octstr_get_cstr(conn->id), octstr_get_cstr(msg->sms.sender));
++    }
++
+     /* if this a retry of splitted message, don't unify prefix and don't try to split */
+     if (msg->sms.split_parts == NULL) {    
+         /* normalize the destination number for this smsc */
+@@ -742,6 +826,11 @@
+     GET_OPTIONAL_REGEX(conn->denied_prefix_regex, "denied-prefix-regex");
+     GET_OPTIONAL_REGEX(conn->preferred_prefix_regex, "preferred-prefix-regex");
+ 
++    octstr_destroy(conn->default_sender_number);
++    octstr_destroy(conn->sender_number);
++    dict_destroy(conn->sender_by_smsbox_id);
++    init_senders(conn, grp);
++
+     octstr_destroy(conn->reroute_to_smsc);
+     dict_destroy(conn->reroute_by_receiver);
+     init_reroute(conn, grp);
+Index: gw/smscconn_p.h
+===================================================================
+--- gw/smscconn_p.h	(revision 5282)
++++ gw/smscconn_p.h	(working copy)
+@@ -191,6 +191,11 @@
+ 
+     Octstr *our_host;   /* local device IP to bind for TCP communication */
+ 
++    /* Replacement of sender's number */
++    Octstr *default_sender_number; /* default MT sender number you want to disguise */
++    Octstr *sender_number; /* Same, but within specified smsbox-id: smsbox-id:number */
++    Dict *sender_by_smsbox_id;
++
+     /* Our smsc specific log-file data */
+     Octstr *log_file;
+     long log_level;
+Index: gwlib/cfg.def
+===================================================================
+--- gwlib/cfg.def	(revision 5282)
++++ gwlib/cfg.def	(working copy)
+@@ -305,6 +305,7 @@
+     OCTSTR(smsbox-id)
+     OCTSTR(smsc-id)
+     OCTSTR(shortcode)
++    OCTSTR(sender)
+ )
+ 
+ 
+@@ -436,6 +437,8 @@
+     OCTSTR(generic-foreign-id-regex)
+     OCTSTR(mobile-originated)
+     OCTSTR(instances)
++    OCTSTR(default-sender-number)
++    OCTSTR(sender-number)
+ )
+ 
+ 
