@@ -40,5 +40,5 @@ RUN set -ex \
 	&&./configure --prefix=/usr --with-kannel-dir=/usr && make && make install \
 	&& apk del .build-deps \
 	&& rm -rf /trunk /*.patch \
-    && mkdir -p /var/log/kannel /var/spool/kannel \
+        && mkdir -p /var/log/kannel /var/spool/kannel \
 	&& /usr/sbin/bearerbox --version
