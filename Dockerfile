@@ -2,7 +2,7 @@ FROM alpine:3.12
 MAINTAINER dynax60 <dynax60@gmail.com>
 
 ARG KANNEL_CONF="/etc/kannel"
-ARG KANNEL_REVISION="r5304"
+ARG KANNEL_REVISION="r5306"
 ARG KANNEL_REPOSITORY="https://svn.kannel.org/gateway/trunk"
 
 ENV KANNEL_CONF="${KANNEL_CONF:-/etc/kannel}"
