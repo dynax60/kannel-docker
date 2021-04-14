@@ -1,5 +1,5 @@
 IMAGE_NAME ?= dynax60/kannel
-IMAGE_VERSION ?= r5306
+IMAGE_VERSION ?= r5307
 IMAGE=$(IMAGE_NAME):$(IMAGE_VERSION)
 
 .PHONY: build release
