@@ -2,7 +2,7 @@ version: '3.7'
 
 services:
   bearerbox:
-    image: dynax60/kannel:r5307
+    image: dynax60/kannel:r5315
     hostname: bearerbox
     restart: always
     command: bearerbox /etc/kannel/kannel.conf
@@ -17,7 +17,7 @@ services:
       - ./data:/var/spool/kannel
 
   smsbox:
-    image: dynax60/kannel:r5307
+    image: dynax60/kannel:r5315
     hostname: smsbox
     command: smsbox /etc/kannel/smsbox.conf
     links:
